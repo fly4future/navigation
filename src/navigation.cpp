@@ -138,6 +138,7 @@ namespace navigation
     int replanning_counter_ = 0;
 
     std::vector<vec4_t> current_waypoints_;
+    int current_waypoint_id_ = 0;
 
     rclcpp::TimerBase::SharedPtr execution_timer_;
     void navigationRoutine();
@@ -274,7 +275,7 @@ namespace navigation
     void visualizeExpansions(const std::unordered_set<navigation::Node, HashFunction> open, const std::unordered_set<navigation::Node, HashFunction>& closed,
                              const octomap::OcTree& tree);
     void visualizePath(const std::vector<vec4_t>& waypoints);
-    void visualizeTrajectory(const std::vector<vec4_t> &waypoints);
+    void visualizeTrajectory(const std::vector<vec4_t> &trajectory);
     void visualizeGoals(const std::deque<vec4_t>& waypoints);
 
     std::vector<vec4_t> resamplePath(const std::vector<octomap::point3d>& waypoints, const double end_heading) const;
@@ -416,7 +417,7 @@ namespace navigation
         rclcpp::SystemDefaultsQoS(), std::bind(&Navigation::bumperCallback, this, _1), subopts);
 
     subopts.callback_group = new_cbk_grp();
-    other_uav_trajectory_subscriber_ = create_subscription<fog_msgs::msg::FutureTrajectory>("~/trajectory_in", 1, std::bind(&Navigation::otherUavTrajectoryCallback, this, _1), subopts);
+    other_uav_trajectory_subscriber_ = create_subscription<fog_msgs::msg::FutureTrajectory>("~/trajectories_in", 1, std::bind(&Navigation::otherUavTrajectoryCallback, this, _1), subopts);
 
     // service handlers
     const auto qos_profile = qos.get_rmw_qos_profile();
@@ -530,8 +531,8 @@ namespace navigation
     const auto vehicle_state = control_interface::to_enum(msg->vehicle_state);
     const auto mission_state = control_interface::to_enum(msg->mission_state);
     set_mutexed(control_diags_mutex_,
-        std::make_tuple(vehicle_state, mission_state, true, msg->mission_id),
-        std::forward_as_tuple(control_vehicle_state_, control_mission_state_, getting_control_diagnostics_, control_response_id_)
+        std::make_tuple(vehicle_state, mission_state, true, msg->mission_id, msg->mission_waypoint),
+        std::forward_as_tuple(control_vehicle_state_, control_mission_state_, getting_control_diagnostics_, control_response_id_, current_waypoint_id_)
       );
     RCLCPP_INFO_ONCE(get_logger(), "Getting control_interface diagnostics");
   }
@@ -545,10 +546,14 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   
   // TODO transform each point to common origin
   
-  if (it == other_uav_trajectories.end()) {
-    avoidance_names_.push_back(msg->uav_name);
+  {
+    std::scoped_lock lck(mutex_other_uav_trajectories);
+    if (it == other_uav_trajectories.end()) {
+      avoidance_names_.push_back(msg->uav_name);
+    }
+
+    other_uav_trajectories[msg->uav_name] = *msg;
   }
-  other_uav_trajectories[msg->uav_name] = *msg;
 
   return;
 }
@@ -943,10 +948,11 @@ void Navigation::futureTrajectoryRoutine(void) {
 
     auto waypoints = get_mutexed(waypoints_mutex_, current_waypoints_); 
 
-    RCLCPP_INFO_STREAM(get_logger(), waypoints.size());
-    /* std::vector<vec4_t> current_trajectory = parametrizePath(waypoints); */
-    /* visualizeTrajectory(current_trajectory); */
-    /* publishFutureTrajectory(current_trajectory); */
+    /* RCLCPP_INFO_STREAM(get_logger(), "Mission size: " << waypoints.size() << "Current waypoint: " << current_waypoint_id_); */
+
+    std::vector<vec4_t> current_trajectory = parametrizePath(waypoints);
+    visualizeTrajectory(current_trajectory);
+    publishFutureTrajectory(current_trajectory);
     
 
   } 
@@ -1504,82 +1510,67 @@ void Navigation::futureTrajectoryRoutine(void) {
   }
   //}
   
-/* parametrizePath //{ */
-std::vector<vec4_t> Navigation::parametrizePath(const std::vector<vec4_t> &waypoints) {
-
-  RCLCPP_INFO(this->get_logger(), "starting new replanning");
-  std::vector<vec4_t> ret;
-  
-  int num_of_waypoints = waypoints.size();
-
+  /* parametrizePath //{ */
+  std::vector<vec4_t> Navigation::parametrizePath(const std::vector<vec4_t> &waypoints) 
   {
-    std::scoped_lock lock(uav_pose_mutex_);
-    if (num_of_waypoints < 1){
-      for (int i = 0; i < prediction_len_; i++) {
-        ret.push_back(uav_pose_);
+  
+    std::vector<vec4_t> ret(prediction_len_);
+
+    int num_of_waypoints = waypoints.size();
+    auto current_waypoint_id = get_mutexed(control_diags_mutex_, current_waypoint_id_);
+
+    {
+      std::scoped_lock lock(uav_pose_mutex_);
+      if (num_of_waypoints < 1){
+        fill(ret.begin(), ret.begin() + prediction_len_, uav_pose_);
+        return ret;
       }
-      return ret;
+      ret[0] = uav_pose_;
     }
-    ret.push_back(uav_pose_);
-  }
-
-  double desired_distance = 0.1*prediction_time_sample_; 
-  int i = 0; 
-  int high = 1;
-  int low = high - 1;
-  RCLCPP_INFO(this->get_logger(), "num of waypoints: %d , current id: %d", num_of_waypoints, 0);
-  while (i < prediction_len_) {
-    vec4_t next_point;
-    vec3_t direction;
-    double dist = (ret.back().head<3>() - waypoints[high].head<3>()).norm();
-    if (dist >= desired_distance) { 
-
-      direction.x() = waypoints[high].x() - ret.back().x();
-      direction.y() = waypoints[high].y() - ret.back().y();
-      direction.z() = waypoints[high].z() - ret.back().z();
-      direction = direction.normalized() * desired_distance;
-
-      next_point.x() = ret.back().x() + direction.x();
-      next_point.y() = ret.back().y() + direction.y();
-      next_point.z() = ret.back().z() + direction.z();
-      next_point.w() = 0;
-
-    } else {
-      double rdistance = desired_distance - dist;
-      while (++high < num_of_waypoints){
-        low++;
-        double dist = (waypoints[low].head<3>() - waypoints[high].head<3>()).norm();
-        if (rdistance - dist <= 0.0)
-          break;
-
-        rdistance -= dist;
+  
+    double desired_distance = 0.1*prediction_time_sample_; 
+    int i = 0; 
+    int high = current_waypoint_id;
+    RCLCPP_INFO(this->get_logger(), "num of waypoints: %d , current id: %d", num_of_waypoints, current_waypoint_id);
+    while (i < prediction_len_) 
+    {
+      vec4_t next_point;
+      vec3_t direction;
+      double dist = (ret.back().head<3>() - waypoints[high].head<3>()).norm();
+      if (dist >= desired_distance) 
+      { 
+        direction = (waypoints[high].head<3>() - ret.back().head<3>()).normalized() * desired_distance;
+        next_point.head<3>() = ret.back().head<3>() + direction;
+        next_point.w() = 0;
+      } 
+      else 
+      {
+        double rdistance = desired_distance - dist;
+        while (++high < num_of_waypoints)
+        {
+          double dist = (waypoints[high-1].head<3>() - waypoints[high].head<3>()).norm();
+          if (rdistance - dist <= 0.0)
+            break;
+  
+          rdistance -= dist;
+        }
+        direction     = (waypoints[high].head<3>() - waypoints[high-1].head<3>()).normalized() * rdistance;
+  
+        next_point.head<3>() = waypoints[high-1].head<3>() + direction;
+        next_point.w() = 0;
       }
-      direction.x() = waypoints[high].x() - waypoints[low].x();
-      direction.y() = waypoints[high].y() - waypoints[low].y();
-      direction.z() = waypoints[high].z() - waypoints[low].z();
-      direction     = direction.normalized() * rdistance;
-
-      next_point.x() = waypoints[low].x() + direction.x();
-      next_point.y() = waypoints[low].y() + direction.y();
-      next_point.z() = waypoints[low].z() + direction.z();
-      next_point.w() = 0;
+  
+      if (high >= num_of_waypoints)
+      {
+        next_point = waypoints.back();
+      }
+  
+      ret[i] = next_point;  
+      i++;
     }
-
-    if (high >= num_of_waypoints){
-      next_point = waypoints.back();
-    }
-
-    if (i == 0){
-      ret[0] = next_point;  
-    }else{
-      ret.push_back(next_point);
-    }
-
-    i++;
+    return ret;
   }
-  return ret;
-}
-//}
+  //}
 
   ///* checkTrajectory //{*/
 bool Navigation::checkTrajectory(std::vector<vec4_t>& trajectory){
@@ -1677,6 +1668,7 @@ bool Navigation::checkCollisions(const vec4_t& one, const vec4_t& two){
     msg.current_nav_goal.at(0) = waypoint_current_.x();
     msg.current_nav_goal.at(1) = waypoint_current_.y();
     msg.current_nav_goal.at(2) = waypoint_current_.z();
+    msg.active_uavs = avoidance_names_;
     diagnostics_publisher_->publish(msg);
   }
   //}
@@ -1863,6 +1855,27 @@ void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) 
       msg.colors.push_back(c);
     }
     path_publisher_->publish(msg);
+  }
+  //}
+  
+  /* visualizeTrajectory//{*/
+  void Navigation::visualizeTrajectory(const std::vector<vec4_t> &trajectory)
+  {
+    geometry_msgs::msg::PoseArray msg;
+    msg.header.frame_id    = octree_frame_;
+    msg.header.stamp       = get_clock()->now();
+
+    geometry_msgs::msg::Pose p;
+
+    for (auto& point:trajectory) {
+      p.position.x = point.x();
+      p.position.y = point.y();
+      p.position.z = point.z();
+      msg.poses.push_back(p);
+    }
+
+    trajectory_publisher_->publish(msg);
+
   }
   //}
 

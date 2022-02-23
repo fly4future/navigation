@@ -23,6 +23,7 @@ def generate_launch_description():
 
 
     DRONE_DEVICE_ID=os.getenv('DRONE_DEVICE_ID')
+    FUTURE_TRAJECTORIES_TOPIC="/future_trajectories"
 
     namespace=DRONE_DEVICE_ID
     ld.add_action(ComposableNodeContainer(
@@ -54,13 +55,13 @@ def generate_launch_description():
                     ("~/local_path_in", "~/local_path"),
                     ("~/gps_waypoint_in", "~/gps_waypoint"),
                     ("~/gps_path_in", "~/gps_path"),
-                    ("~/trajectory_in", "~/future_trajectories"),
+                    ("~/trajectories_in", FUTURE_TRAJECTORIES_TOPIC),
 
                     ("~/diagnostics_out", "~/diagnostics"),
-                    ("~/trajectory_out", "~/future_trajectories"),
+                    ("~/trajectory_out", "~/trajectory"),
                     ("~/status_out", "~/status_out"), #needs to be named as status_out due to mission-engine plugin
                     ("~/future_path_out", "~/future_path"),
-                    ("~/future_trajectory_out", "~/future_path"),
+                    ("~/future_trajectory_out", FUTURE_TRAJECTORIES_TOPIC),
 
 
                     ("~/binary_tree_markers_out", "~/visualization/binary_tree_markers"),
