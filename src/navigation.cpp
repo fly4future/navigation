@@ -1514,21 +1514,23 @@ void Navigation::futureTrajectoryRoutine(void) {
   std::vector<vec4_t> Navigation::parametrizePath(const std::vector<vec4_t> &waypoints) 
   {
   
-    std::vector<vec4_t> ret(prediction_len_);
+    std::vector<vec4_t> ret;
 
     int num_of_waypoints = waypoints.size();
     auto current_waypoint_id = get_mutexed(control_diags_mutex_, current_waypoint_id_);
 
     {
       std::scoped_lock lock(uav_pose_mutex_);
-      if (num_of_waypoints < 1){
-        fill(ret.begin(), ret.begin() + prediction_len_, uav_pose_);
+      if (num_of_waypoints < 1)
+      {
+        for (int i = 0; i < prediction_len_; i++)
+          ret.push_back(uav_pose_);
         return ret;
       }
-      ret[0] = uav_pose_;
+      ret.push_back(uav_pose_);
     }
   
-    double desired_distance = 0.1*prediction_time_sample_; 
+    double desired_distance = 1.0*prediction_time_sample_; 
     int i = 0; 
     int high = current_waypoint_id;
     RCLCPP_INFO(this->get_logger(), "num of waypoints: %d , current id: %d", num_of_waypoints, current_waypoint_id);
@@ -1536,10 +1538,10 @@ void Navigation::futureTrajectoryRoutine(void) {
     {
       vec4_t next_point;
       vec3_t direction;
-      double dist = (ret.back().head<3>() - waypoints[high].head<3>()).norm();
+      double dist = (ret.back().head<3>() - waypoints.at(high).head<3>()).norm();
       if (dist >= desired_distance) 
       { 
-        direction = (waypoints[high].head<3>() - ret.back().head<3>()).normalized() * desired_distance;
+        direction = (waypoints.at(high).head<3>() - ret.back().head<3>()).normalized() * desired_distance;
         next_point.head<3>() = ret.back().head<3>() + direction;
         next_point.w() = 0;
       } 
@@ -1548,15 +1550,15 @@ void Navigation::futureTrajectoryRoutine(void) {
         double rdistance = desired_distance - dist;
         while (++high < num_of_waypoints)
         {
-          double dist = (waypoints[high-1].head<3>() - waypoints[high].head<3>()).norm();
+          double dist = (waypoints.at(high-1).head<3>() - waypoints.at(high).head<3>()).norm();
           if (rdistance - dist <= 0.0)
             break;
   
           rdistance -= dist;
         }
-        direction     = (waypoints[high].head<3>() - waypoints[high-1].head<3>()).normalized() * rdistance;
+        direction = (waypoints.at(high).head<3>() - waypoints.at(high-1).head<3>()).normalized() * rdistance;
   
-        next_point.head<3>() = waypoints[high-1].head<3>() + direction;
+        next_point.head<3>() = waypoints.at(high-1).head<3>() + direction;
         next_point.w() = 0;
       }
   
@@ -1565,59 +1567,66 @@ void Navigation::futureTrajectoryRoutine(void) {
         next_point = waypoints.back();
       }
   
-      ret[i] = next_point;  
-      i++;
+      if (i == 0)
+      {
+        ret[0] = next_point;
+      }
+      else
+      {
+        ret.push_back(next_point);
+      }
+      i++;  
     }
     return ret;
   }
   //}
 
   ///* checkTrajectory //{*/
-bool Navigation::checkTrajectory(std::vector<vec4_t>& trajectory){
-
-  if (!is_initialized_){
-      return false;
-  }
-
-  {
-    std::scoped_lock lock(mutex_other_uav_trajectories);
-
-    int size = trajectory.size();
-    auto it = other_uav_trajectories.begin();
-    while (it != other_uav_trajectories.end())
+  bool Navigation::checkTrajectory(std::vector<vec4_t>& trajectory){
+  
+    if (!is_initialized_){
+        return false;
+    }
+  
     {
-      if(it->second.uav_name != uav_name_){ 
-        //TODO: add timestamp check
-        for (int i = 0; i < size; i++)
-        {
-            if (checkCollisions(trajectory[i], to_eigen(it->second.poses[i])))
-            {
-                // collision found, compare priorities, modify
-                if (priority_ < it->second.priority)
-                {
-                    trajectory[i].z() += height_offset_;
-                    /* modify = true; */
-                }
-            }
+      std::scoped_lock lock(mutex_other_uav_trajectories);
+  
+      int size = trajectory.size();
+      auto it = other_uav_trajectories.begin();
+      while (it != other_uav_trajectories.end())
+      {
+        if(it->second.uav_name != uav_name_){ 
+          //TODO: add timestamp check
+          for (int i = 0; i < size; i++)
+          {
+              if (checkCollisions(trajectory[i], to_eigen(it->second.poses[i])))
+              {
+                  // collision found, compare priorities, modify
+                  if (priority_ < it->second.priority)
+                  {
+                      trajectory[i].z() += height_offset_;
+                      /* modify = true; */
+                  }
+              }
+          }
         }
       }
     }
+  
+    return true;
   }
+  /*//}*/
 
-  return true;
-}
-/*//}*/
-
-/* checkCollisions //{*/
-bool Navigation::checkCollisions(const vec4_t& one, const vec4_t& two){
-
-  if ((one.head<2>() - two.head<2>()).norm() < horizontal_distance_threshold_ || fabs(one.z() - two.z()) < height_distance_threshold_)
-  {
-      return true;
+  /* checkCollisions //{*/
+  bool Navigation::checkCollisions(const vec4_t& one, const vec4_t& two){
+  
+    if ((one.head<2>() - two.head<2>()).norm() < horizontal_distance_threshold_ || fabs(one.z() - two.z()) < height_distance_threshold_)
+    {
+        return true;
+    }
+    return false;
   }
-  return false;
-}
-/*//}*/
+  /*//}*/
 
 
   // | ----------------- Command-sending methods ---------------- |
@@ -1862,8 +1871,8 @@ void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) 
   void Navigation::visualizeTrajectory(const std::vector<vec4_t> &trajectory)
   {
     geometry_msgs::msg::PoseArray msg;
-    msg.header.frame_id    = octree_frame_;
-    msg.header.stamp       = get_clock()->now();
+    msg.header.frame_id = get_mutexed(octree_mutex_, octree_frame_);
+    msg.header.stamp = get_clock()->now();
 
     geometry_msgs::msg::Pose p;
 
@@ -1871,6 +1880,7 @@ void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) 
       p.position.x = point.x();
       p.position.y = point.y();
       p.position.z = point.z();
+      p.orientation = heading2quat(point.w());
       msg.poses.push_back(p);
     }
 
