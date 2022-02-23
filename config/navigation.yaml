@@ -30,3 +30,14 @@ bumper:
   enabled: true
   distance_factor: 0.9 # virtual bumper will intervene at (safe_obstacle_distance * bumper_distance_factor)
   min_replan_period: 0.5 # [s] avoidance won't be replanned with a shorter period than this
+
+collision_avoidance:
+  priority: 1 
+  trajectory_timeout: 1.0 # [s]
+  prediction_len: 10 # points
+  prediction_time_horizon: 8.0 # [s]
+  height_offset: 1.0 # [m]
+  trajectory_update_rate: 10.0 # [Hz]
+  horizontal_distance_threshold: 1.5 # [m]
+  height_distance_threshold: 1.0 # [m]
+

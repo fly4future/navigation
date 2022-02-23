@@ -39,6 +39,7 @@ def generate_launch_description():
                 parameters=[
                     pkg_share_path + '/config/navigation.yaml',
                     {"use_sim_time": launch.substitutions.LaunchConfiguration("use_sim_time")},
+                    {"uav_name": DRONE_DEVICE_ID}, 
                 ],
                 remappings=[
                     ("~/octomap_in", "/" + DRONE_DEVICE_ID + "/octomap_server/octomap_full"),
@@ -53,10 +54,14 @@ def generate_launch_description():
                     ("~/local_path_in", "~/local_path"),
                     ("~/gps_waypoint_in", "~/gps_waypoint"),
                     ("~/gps_path_in", "~/gps_path"),
-                    ("~/diagnostics_out", "~/diagnostics"),
+                    ("~/trajectory_in", "~/future_trajectories"),
 
+                    ("~/diagnostics_out", "~/diagnostics"),
+                    ("~/trajectory_out", "~/future_trajectories"),
                     ("~/status_out", "~/status_out"), #needs to be named as status_out due to mission-engine plugin
-                    ("~/future_trajectory_out", "~/future_trajectory"),
+                    ("~/future_path_out", "~/future_path"),
+                    ("~/future_trajectory_out", "~/future_path"),
+
 
                     ("~/binary_tree_markers_out", "~/visualization/binary_tree_markers"),
                     ("~/expansion_markers_out", "~/visualization/expansion_markers"),
