@@ -16,7 +16,7 @@ def generate_launch_description():
     pkg_share_path = get_package_share_directory(pkg_name)
     
     ld.add_action(launch.actions.DeclareLaunchArgument("use_sim_time", default_value="false"))
-    ld.add_action(launch.actions.DeclareLaunchArgument("debug", default_value="true"))
+    ld.add_action(launch.actions.DeclareLaunchArgument("debug", default_value="false"))
     dbg_sub = None
     if sys.stdout.isatty():
         dbg_sub = launch.substitutions.PythonExpression(['"" if "false" == "', launch.substitutions.LaunchConfiguration("debug"), '" else "debug_ros2launch ' + os.ttyname(sys.stdout.fileno()) + '"'])
