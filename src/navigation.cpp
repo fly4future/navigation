@@ -1515,67 +1515,56 @@ void Navigation::futureTrajectoryRoutine(void) {
   {
   
     std::vector<vec4_t> ret;
-
-    int num_of_waypoints = waypoints.size();
-    auto current_waypoint_id = get_mutexed(control_diags_mutex_, current_waypoint_id_);
-
-    {
-      std::scoped_lock lock(uav_pose_mutex_);
-      if (num_of_waypoints < 1)
-      {
-        for (int i = 0; i < prediction_len_; i++)
-          ret.push_back(uav_pose_);
-        return ret;
-      }
-      ret.push_back(uav_pose_);
-    }
   
-    double desired_distance = 1.0*prediction_time_sample_; 
-    int i = 0; 
-    int high = current_waypoint_id;
-    RCLCPP_INFO(this->get_logger(), "num of waypoints: %d , current id: %d", num_of_waypoints, current_waypoint_id);
-    while (i < prediction_len_) 
+    const int prediction_len_ = 8;
+    const int num_of_waypoints = waypoints.size();
+    const double desired_distance = 1.5*prediction_time_sample_; //TODO add speed
+  
+    auto current_waypoint_id = get_mutexed(control_diags_mutex_, current_waypoint_id_);
+    auto uav_pose = get_mutexed(uav_pose_mutex_, uav_pose_);
+
+    if (num_of_waypoints < 1 || current_waypoint_id > num_of_waypoints)
+    {
+      for (int i = 0; i < prediction_len_; i++)
+        ret.push_back(uav_pose);
+      return ret;
+    }
+
+    vec4_t last = uav_pose;
+  
+    int i = 0;
+    double rdistance = desired_distance;
+
+    int j = current_waypoint_id-1;
+    while (j < num_of_waypoints) 
     {
       vec4_t next_point;
-      vec3_t direction;
-      double dist = (ret.back().head<3>() - waypoints.at(high).head<3>()).norm();
-      if (dist >= desired_distance) 
+  
+      double dist = (last.head<3>() - waypoints.at(j).head<3>()).norm();
+      if (dist >= rdistance) 
       { 
-        direction = (waypoints.at(high).head<3>() - ret.back().head<3>()).normalized() * desired_distance;
-        next_point.head<3>() = ret.back().head<3>() + direction;
+
+        next_point.head<3>() = last.head<3>() + (waypoints.at(j).head<3>() - last.head<3>()).normalized() * rdistance;;
         next_point.w() = 0;
+  
+        ret.push_back(next_point);
+        last = next_point;
+        rdistance = desired_distance;
+  
+        if (++i == prediction_len_){
+          break;
+        }
       } 
       else 
       {
-        double rdistance = desired_distance - dist;
-        while (++high < num_of_waypoints)
-        {
-          double dist = (waypoints.at(high-1).head<3>() - waypoints.at(high).head<3>()).norm();
-          if (rdistance - dist <= 0.0)
-            break;
-  
-          rdistance -= dist;
-        }
-        direction = (waypoints.at(high).head<3>() - waypoints.at(high-1).head<3>()).normalized() * rdistance;
-  
-        next_point.head<3>() = waypoints.at(high-1).head<3>() + direction;
-        next_point.w() = 0;
+        rdistance -= dist;
+        last = waypoints.at(j++);
       }
+    }
   
-      if (high >= num_of_waypoints)
-      {
-        next_point = waypoints.back();
-      }
-  
-      if (i == 0)
-      {
-        ret[0] = next_point;
-      }
-      else
-      {
-        ret.push_back(next_point);
-      }
-      i++;  
+    for(int j = i; j < prediction_len_; j++) 
+    {
+      ret.push_back(waypoints.back());
     }
     return ret;
   }
