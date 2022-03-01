@@ -550,7 +550,8 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   
   {
     std::scoped_lock lck(mutex_other_uav_trajectories);
-    if (it == other_uav_trajectories.end()) {
+    if (it == other_uav_trajectories.end()) 
+    {
       avoidance_names_.push_back(msg->uav_name);
     }
 
@@ -943,11 +944,13 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   }
   //}
   
-/* futureTrajectoryRoutine //{ */
-void Navigation::futureTrajectoryRoutine(void) {
-
-  if (is_initialized_) {
-
+  /* futureTrajectoryRoutine //{ */
+  void Navigation::futureTrajectoryRoutine(void) 
+  {
+    auto state = get_mutexed(state_mutex_, state_); 
+    if (state == nav_state_t::not_ready)
+      return;
+  
     auto waypoints = get_mutexed(waypoints_mutex_, current_waypoints_); 
 
     /* RCLCPP_INFO_STREAM(get_logger(), "Mission size: " << waypoints.size() << "Current waypoint: " << current_waypoint_id_); */
@@ -955,12 +958,10 @@ void Navigation::futureTrajectoryRoutine(void) {
     std::vector<vec4_t> current_trajectory = parametrizePath(waypoints);
     visualizeTrajectory(current_trajectory);
     publishFutureTrajectory(current_trajectory);
-    
-
-  } 
-  return;
-}
-//}
+      
+    return;
+  }
+  //}
 
   // | ------------- State function implementations ------------- |
 
@@ -1582,7 +1583,8 @@ void Navigation::futureTrajectoryRoutine(void) {
       auto it = other_uav_trajectories.begin();
       while (it != other_uav_trajectories.end())
       {
-        if(it->second.uav_name != uav_name_){ 
+        if(it->second.uav_name != uav_name_)
+        { 
           //TODO: add timestamp check
           for (int i = 0; i < size; i++)
           {
