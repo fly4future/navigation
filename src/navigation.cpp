@@ -1523,7 +1523,7 @@ void Navigation::futureTrajectoryRoutine(void) {
     auto current_waypoint_id = get_mutexed(control_diags_mutex_, current_waypoint_id_);
     auto uav_pose = get_mutexed(uav_pose_mutex_, uav_pose_);
 
-    if (num_of_waypoints < 1 || current_waypoint_id > num_of_waypoints)
+    if (num_of_waypoints < 1 || current_waypoint_id > num_of_waypoints || current_waypoint_id == 0)
     {
       for (int i = 0; i < prediction_len_; i++)
         ret.push_back(uav_pose);
@@ -1535,7 +1535,7 @@ void Navigation::futureTrajectoryRoutine(void) {
     int i = 0;
     double rdistance = desired_distance;
 
-    int j = current_waypoint_id-1;
+    int j = current_waypoint_id;
     while (j < num_of_waypoints) 
     {
       vec4_t next_point;
@@ -1551,9 +1551,8 @@ void Navigation::futureTrajectoryRoutine(void) {
         last = next_point;
         rdistance = desired_distance;
   
-        if (++i == prediction_len_){
+        if (++i == prediction_len_)
           break;
-        }
       } 
       else 
       {
@@ -1563,9 +1562,8 @@ void Navigation::futureTrajectoryRoutine(void) {
     }
   
     for(int j = i; j < prediction_len_; j++) 
-    {
       ret.push_back(waypoints.back());
-    }
+
     return ret;
   }
   //}
