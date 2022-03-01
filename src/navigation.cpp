@@ -97,6 +97,7 @@ namespace navigation
     std::shared_mutex uav_pose_mutex_;
     bool getting_uav_pose_ = false;
     vec4_t uav_pose_;
+    vec3_t uav_velocity_;
 
     std::shared_mutex cmd_pose_mutex_;
     bool getting_cmd_pose_ = false;
@@ -497,7 +498,8 @@ namespace navigation
     }
 
     const vec4_t uav_pose(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z, quat2heading(msg->pose.pose.orientation));
-    set_mutexed(uav_pose_mutex_, std::make_tuple(uav_pose, true), std::forward_as_tuple(uav_pose_, getting_uav_pose_));
+    const vec3_t uav_velocity(msg->twist.twist.linear.x, msg->twist.twist.linear.y, msg->twist.twist.linear.z);
+    set_mutexed(uav_pose_mutex_, std::make_tuple(uav_pose, true, uav_velocity), std::forward_as_tuple(uav_pose_, getting_uav_pose_, uav_velocity_));
     RCLCPP_INFO_ONCE(get_logger(), "Getting odometry");
   }
   //}
@@ -1516,13 +1518,12 @@ void Navigation::futureTrajectoryRoutine(void) {
   
     std::vector<vec4_t> ret;
   
-    const int prediction_len_ = 8;
-    const int num_of_waypoints = waypoints.size();
-    const double desired_distance = 1.5*prediction_time_sample_; //TODO add speed
-  
     auto current_waypoint_id = get_mutexed(control_diags_mutex_, current_waypoint_id_);
-    auto uav_pose = get_mutexed(uav_pose_mutex_, uav_pose_);
+    auto [uav_pose, uav_velocity] = get_mutexed(uav_pose_mutex_, uav_pose_, uav_velocity_);
 
+    const int num_of_waypoints = waypoints.size();
+    const double desired_distance = 1*prediction_time_sample_;  //TODO use uav_velocity.norm() once it publishes real velocity
+    
     if (num_of_waypoints < 1 || current_waypoint_id > num_of_waypoints || current_waypoint_id == 0)
     {
       for (int i = 0; i < prediction_len_; i++)
@@ -1543,7 +1544,6 @@ void Navigation::futureTrajectoryRoutine(void) {
       double dist = (last.head<3>() - waypoints.at(j).head<3>()).norm();
       if (dist >= rdistance) 
       { 
-
         next_point.head<3>() = last.head<3>() + (waypoints.at(j).head<3>() - last.head<3>()).normalized() * rdistance;;
         next_point.w() = 0;
   
