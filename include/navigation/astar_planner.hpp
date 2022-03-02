@@ -10,6 +10,7 @@
 #include <queue>
 #include <dynamicEDT3D/dynamicEDTOctomap.h>
 #include <rclcpp/logger.hpp>
+#include <rclcpp/clock.hpp>
 
 namespace navigation
 {
@@ -33,9 +34,9 @@ enum PlanningResult
 struct Node
 {
   octomap::OcTreeKey key;
-  float             total_cost;
-  float             cum_dist;
-  float             goal_dist;
+  float              total_cost;
+  float              cum_dist;
+  float              goal_dist;
 
   bool operator==(const Node &other) const;
   bool operator!=(const Node &other) const;
@@ -61,21 +62,24 @@ struct HashFunction
 class AstarPlanner {
 
 public:
-  AstarPlanner(float safe_obstacle_distance, float euclidean_distance_cutoff, float planning_tree_resolution, float distance_penalty, float greedy_penalty,
-               float min_altitude, float max_altitude, float timeout_threshold, float max_waypoint_distance, bool unknown_is_occupied, const rclcpp::Logger& logger);
+  AstarPlanner(float safe_obstacle_distance, float euclidean_distance_cutoff, float planning_tree_resolution, int planning_tree_fractor, float distance_penalty,
+               float greedy_penalty, float min_altitude, float max_altitude, float timeout_threshold, float max_waypoint_distance, bool unknown_is_occupied,
+               const rclcpp::Logger &logger, const rclcpp::Clock::SharedPtr clock);
 
 private:
-  float safe_obstacle_distance;
-  float euclidean_distance_cutoff;
-  float planning_tree_resolution;
-  float distance_penalty;
-  float greedy_penalty;
-  float timeout_threshold;
-  float max_waypoint_distance;
-  float min_altitude;
-  float max_altitude;
-  bool   unknown_is_occupied;
-  rclcpp::Logger logger_;
+  float                    safe_obstacle_distance;
+  float                    euclidean_distance_cutoff;
+  float                    planning_tree_resolution;
+  int                      planning_tree_fractor;
+  float                    distance_penalty;
+  float                    greedy_penalty;
+  float                    timeout_threshold;
+  float                    max_waypoint_distance;
+  float                    min_altitude;
+  float                    max_altitude;
+  bool                     unknown_is_occupied;
+  rclcpp::Logger           logger_;
+  rclcpp::Clock::SharedPtr clock_;
 
 public:
   std::pair<std::vector<octomap::point3d>, PlanningResult> findPath(
@@ -89,7 +93,7 @@ private:
                                                               {-1, 1, 0},   {-1, 1, 1},  {0, -1, -1}, {0, -1, 0},  {0, -1, 1}, {0, 0, -1}, {0, 0, 1},
                                                               {0, 1, -1},   {0, 1, 0},   {0, 1, 1},   {1, -1, -1}, {1, -1, 0}, {1, -1, 1}, {1, 0, -1},
                                                               {1, 0, 0},    {1, 0, 1},   {1, 1, -1},  {1, 1, 0},   {1, 1, 1}};
-  float                              getNodeDepth(const octomap::OcTreeKey &key, octomap::OcTree &tree);
+  float                               getNodeDepth(const octomap::OcTreeKey &key, octomap::OcTree &tree);
 
   std::vector<octomap::OcTreeKey> getNeighborhood(const octomap::OcTreeKey &key, octomap::OcTree &tree);
 
@@ -107,8 +111,8 @@ private:
 
   DynamicEDTOctomap euclideanDistanceTransform(std::shared_ptr<octomap::OcTree> tree);
 
-  std::optional<std::pair<octomap::OcTree, std::vector<octomap::point3d>>> createPlanningTree(std::shared_ptr<octomap::OcTree> tree,
-                                                                                              const octomap::point3d &start, float resolution);
+  std::optional<std::pair<std::shared_ptr<octomap::OcTree>, std::vector<octomap::point3d>>> createPlanningTree(std::shared_ptr<octomap::OcTree> tree,
+                                                                                                               const octomap::point3d &start, float resolution);
 
   std::pair<octomap::point3d, bool> generateTemporaryGoal(const octomap::point3d &start, const octomap::point3d &goal, octomap::OcTree &tree);
 
@@ -116,7 +120,10 @@ private:
 
   std::vector<octomap::point3d> prepareOutputPath(const std::vector<octomap::OcTreeKey> &keys, octomap::OcTree &tree);
 
-  /* geometry_msgs::msg::Quaternion yawToQuaternionMsg(const float &yaw); */
+  octomap::OcTreeNode *touchNode(std::shared_ptr<octomap::OcTree> &octree, const octomap::OcTreeKey &key, unsigned int target_depth = 0);
+
+  octomap::OcTreeNode *touchNodeRecurs(std::shared_ptr<octomap::OcTree> &octree, octomap::OcTreeNode *node, const octomap::OcTreeKey &key, unsigned int depth,
+                                       unsigned int max_depth = 0);
 };
 
 }  // namespace navigation

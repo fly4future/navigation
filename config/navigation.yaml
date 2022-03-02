@@ -9,14 +9,15 @@ planning:
   distance_penalty: 1.0
   greedy_penalty: 1.0
   planning_tree_resolution: 0.4 # [m/voxel]
+  planning_tree_fractor: 0 #
   max_waypoint_distance: 3.0 # [m] or set negative to allow maximal segment length
   max_heading_step: 0.1 # [rad]
   planning_timeout: 4.5 # [s]
   replanning_limit: 3 # number of repeated attempts
   replanning_distance: 15.0 # [m] Euclidean distance from first waypoint
   override_previous_commands: true # new GOTO will override all previous actions
-  main_update_rate: 10.0 # [Hz] 
-  diagnostics_rate: 1.0 # [Hz] 
+  main_update_rate: 10.0 # [Hz]
+  diagnostics_rate: 1.0 # [Hz]
 
 visualization:
   visualize_planner: true
