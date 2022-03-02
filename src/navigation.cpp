@@ -48,6 +48,9 @@
 #include <limits>
 #include <tuple>
 #include <unordered_map>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/create_timer_ros.h>
+#include <tf2_ros/transform_listener.h>
 
 #include <control_interface/enums.h>
 #include <fog_lib/mutex_utils.h>
@@ -159,6 +162,10 @@ namespace navigation
     void state_navigation_avoiding();
 
     std::pair<std::vector<vec4_t>, bool> planPath(const vec4_t& goal, std::shared_ptr<octomap::OcTree> mapping_tree);
+
+    
+    std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+    std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
     // params
     double euclidean_distance_cutoff_;
@@ -451,6 +458,20 @@ namespace navigation
       max_waypoint_distance_ = replanning_distance_;
 
     prediction_time_sample_ = prediction_len_ / time_prediction_horizon_;
+
+    // --------------------------------------------------------------
+    // |                         tf listener                        |
+    // --------------------------------------------------------------
+
+    /* tf_listener //{ */
+
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_buffer_->setUsingDedicatedThread(true);
+    auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(this->get_node_base_interface(), this->get_node_timers_interface());
+    tf_buffer_->setCreateTimerInterface(timer_interface);
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, false);
+
+    //}
 
     is_initialized_ = true;
     RCLCPP_INFO(get_logger(), "Initialized");
@@ -1569,7 +1590,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   }
   //}
 
-  ///* checkTrajectory //{*/
+  /* checkTrajectory //{*/
   bool Navigation::checkTrajectory(std::vector<vec4_t>& trajectory){
   
     if (!is_initialized_){
@@ -1616,7 +1637,6 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     return false;
   }
   /*//}*/
-
 
   // | ----------------- Command-sending methods ---------------- |
 
@@ -1692,27 +1712,43 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   }
   //}
   
-/* publishFutureTrajectory //{ */
-void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) {
-  fog_msgs::msg::FutureTrajectory msg;
-  msg.header.stamp            = this->get_clock()->now();
-  msg.header.frame_id         = octree_frame_;
-  msg.uav_name = uav_name_;
-  msg.priority = priority_;
-  msg.header.stamp    = this->get_clock()->now();
-  msg.header.frame_id = octree_frame_;
-  for (const auto &w : trajectory) {
-    fog_msgs::msg::Vector4Stamped v;
-    v.x               = w.x();
-    v.y               = w.y();
-    v.z               = w.z();
-    v.w               = 0;
-    v.header.frame_id = octree_frame_;
-    msg.poses.push_back(v);
+  /* publishFutureTrajectory //{ */
+  void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) 
+  {
+
+    const std::string octree_frame = get_mutexed(octree_mutex_, octree_frame_);
+    geometry_msgs::msg::TransformStamped tf;
+    try
+    {
+      tf = tf_buffer_->lookupTransform("utm_origin", octree_frame, get_clock()->now(),rclcpp::Duration::from_nanoseconds(100));
+
+    }
+    catch(tf2::TransformException &s)
+    {
+      RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(),"utm_origin", s.what());
+      return;
+    }
+
+    fog_msgs::msg::FutureTrajectory msg;
+    msg.header.stamp    = get_clock()->now();
+    msg.header.frame_id = octree_frame;
+    msg.uav_name = uav_name_;
+    msg.priority = priority_;
+
+    for (const auto &w : trajectory) {
+
+      fog_msgs::msg::Vector4Stamped v;
+      v.x               = tf.transform.translation.x + w.x();
+      v.y               = tf.transform.translation.y + w.y();
+      v.z               = tf.transform.translation.z + w.z();      
+      v.w               = 0;
+      v.header.frame_id = "utm_origin";
+      msg.poses.push_back(v);
+    }
+    future_trajectory_publisher_->publish(msg);
+    return;
   }
-  future_trajectory_publisher_->publish(msg);
-}
-//}
+  //}
 
   /* visualization //{ */
 
@@ -2010,15 +2046,15 @@ void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) 
   }
   //}
 
-/* new_cbk_grp() method //{ */
-// just a util function that returns a new mutually exclusive callback group to shorten the call
-rclcpp::CallbackGroup::SharedPtr Navigation::new_cbk_grp()
-{
-  const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
-  callback_groups_.push_back(new_group);
-  return new_group;
-}
-//}
+  /* new_cbk_grp() method //{ */
+  // just a util function that returns a new mutually exclusive callback group to shorten the call
+  rclcpp::CallbackGroup::SharedPtr Navigation::new_cbk_grp()
+  {
+    const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    callback_groups_.push_back(new_group);
+    return new_group;
+  }
+  //}
 
 }  // namespace navigation
 #include <rclcpp_components/register_node_macro.hpp>
