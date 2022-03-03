@@ -204,6 +204,7 @@ namespace navigation
     std::mutex trajectory_mutex_;
 
     std::string uav_name_;
+    std::string global_origin_;
     int priority_;
     int prediction_len_;
     double time_prediction_horizon_;
@@ -223,11 +224,11 @@ namespace navigation
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr expansion_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr path_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr goal_publisher_;
-    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr        trajectory_publisher_;
+    rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr trajectory_local_publisher_;
 
     rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
     rclcpp::Publisher<fog_msgs::msg::FuturePath>::SharedPtr future_path_publisher_;
-    rclcpp::Publisher<fog_msgs::msg::FutureTrajectory>::SharedPtr future_trajectory_publisher_;
+    rclcpp::Publisher<fog_msgs::msg::FutureTrajectory>::SharedPtr trajectory_global_publisher_;
     rclcpp::Publisher<fog_msgs::msg::NavigationDiagnostics>::SharedPtr diagnostics_publisher_;
 
     // subscribers
@@ -363,6 +364,7 @@ namespace navigation
     loaded_successfully &= parse_param("bumper.min_replan_period", bumper_min_replan_period_, *this);
 
     loaded_successfully &= parse_param("collision_avoidance.priority", priority_, *this);
+    loaded_successfully &= parse_param("collision_avoidance.global_origin", global_origin_, *this);
     loaded_successfully &= parse_param("collision_avoidance.prediction_len", prediction_len_, *this);
     loaded_successfully &= parse_param("collision_avoidance.prediction_time_horizon",  time_prediction_horizon_, *this);
     loaded_successfully &= parse_param("collision_avoidance.height_offset", height_offset_, *this);
@@ -388,9 +390,9 @@ namespace navigation
     goal_publisher_ = create_publisher<visualization_msgs::msg::Marker>("~/goal_markers_out", qos);
     status_publisher_ = create_publisher<std_msgs::msg::String>("~/status_out", 1);
     future_path_publisher_ = create_publisher<fog_msgs::msg::FuturePath>("~/future_path_out", qos);
-    future_trajectory_publisher_ = create_publisher<fog_msgs::msg::FutureTrajectory>("~/future_trajectory_out", qos);
+    trajectory_local_publisher_ = create_publisher<geometry_msgs::msg::PoseArray>("~/trajectory_local_out", 1);
+    trajectory_global_publisher_ = create_publisher<fog_msgs::msg::FutureTrajectory>("~/trajectory_global_out", qos);
     diagnostics_publisher_ = create_publisher<fog_msgs::msg::NavigationDiagnostics>("~/diagnostics_out", qos);
-    trajectory_publisher_ = create_publisher<geometry_msgs::msg::PoseArray>("~/trajectory_out", 1);
 
     // service clients
     local_path_client_ = create_client<fog_msgs::srv::Path>("~/local_path_out");
@@ -565,10 +567,32 @@ namespace navigation
 void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajectory::UniquePtr msg){
 
   auto it = other_uav_trajectories.find(msg->uav_name); 
-  msg->header.stamp = this->get_clock()->now();  //Update stamp
   
-  // TODO transform each point to common origin
-  
+  const std::string octree_frame = get_mutexed(octree_mutex_, octree_frame_);
+  geometry_msgs::msg::TransformStamped tf;
+  try
+  {
+    tf = tf_buffer_->lookupTransform(octree_frame,  global_origin_, get_clock()->now(),rclcpp::Duration::from_nanoseconds(100));
+
+  }
+  catch(tf2::TransformException &s)
+  {
+    RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(),  global_origin_.c_str(), s.what());
+    return;
+  }
+
+  fog_msgs::msg::FutureTrajectory new_msg;
+  new_msg.header.stamp = this->get_clock()->now();  //Update stamp
+  for (auto w: msg->poses)
+  {
+    fog_msgs::msg::Vector4Stamped p;
+    p.x = w.x + tf.transform.translation.x; 
+    p.y = w.y + tf.transform.translation.y; 
+    p.z = w.z + tf.transform.translation.z; 
+    p.w = w.w;
+    new_msg.poses.push_back(w);
+  }
+ 
   {
     std::scoped_lock lck(mutex_other_uav_trajectories);
     if (it == other_uav_trajectories.end()) 
@@ -576,7 +600,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
       avoidance_names_.push_back(msg->uav_name);
     }
 
-    other_uav_trajectories[msg->uav_name] = *msg;
+    other_uav_trajectories[msg->uav_name] = new_msg;
   }
 
   return;
@@ -977,9 +1001,10 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     /* RCLCPP_INFO_STREAM(get_logger(), "Mission size: " << waypoints.size() << "Current waypoint: " << current_waypoint_id_); */
 
     std::vector<vec4_t> current_trajectory = parametrizePath(waypoints);
-    visualizeTrajectory(current_trajectory);
+    checkTrajectory(current_trajectory);
     publishFutureTrajectory(current_trajectory);
       
+    visualizeTrajectory(current_trajectory);
     return;
   }
   //}
@@ -1591,36 +1616,35 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   //}
 
   /* checkTrajectory //{*/
-  bool Navigation::checkTrajectory(std::vector<vec4_t>& trajectory){
-  
-    if (!is_initialized_){
-        return false;
-    }
-  
+  bool Navigation::checkTrajectory(std::vector<vec4_t>& trajectory)
+  {
+    std::scoped_lock lock(mutex_other_uav_trajectories);
+
+    int size = trajectory.size();
+    auto it = other_uav_trajectories.begin();
+    while (it != other_uav_trajectories.end())
     {
-      std::scoped_lock lock(mutex_other_uav_trajectories);
-  
-      int size = trajectory.size();
-      auto it = other_uav_trajectories.begin();
-      while (it != other_uav_trajectories.end())
-      {
-        if(it->second.uav_name != uav_name_)
+      if(it->second.uav_name != uav_name_)
+      { 
+        if((get_clock()->now() - it->second.header.stamp).nanoseconds() < 2000)
         { 
-          //TODO: add timestamp check
           for (int i = 0; i < size; i++)
           {
-              if (checkCollisions(trajectory[i], to_eigen(it->second.poses[i])))
+            if (checkCollisions(trajectory.at(i), to_eigen(it->second.poses.at(i))))
+            {
+              // collision found, compare priorities, modify
+              if (priority_ <= it->second.priority)
               {
-                  // collision found, compare priorities, modify
-                  if (priority_ < it->second.priority)
-                  {
-                      trajectory[i].z() += height_offset_;
-                      /* modify = true; */
-                  }
+                // TODO - add obstacle and replan
+                // pause trajectory 
+                //
+                RCLCPP_INFO(get_logger(), "found collision");
               }
+            }
           }
         }
       }
+      ++it;
     }
   
     return true;
@@ -1720,18 +1744,17 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     geometry_msgs::msg::TransformStamped tf;
     try
     {
-      tf = tf_buffer_->lookupTransform("utm_origin", octree_frame, get_clock()->now(),rclcpp::Duration::from_nanoseconds(100));
-
+      tf = tf_buffer_->lookupTransform(global_origin_, octree_frame, get_clock()->now(),rclcpp::Duration::from_nanoseconds(100));
     }
     catch(tf2::TransformException &s)
     {
-      RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(),"utm_origin", s.what());
+      RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(), global_origin_.c_str(), s.what());
       return;
     }
 
     fog_msgs::msg::FutureTrajectory msg;
     msg.header.stamp    = get_clock()->now();
-    msg.header.frame_id = octree_frame;
+    msg.header.frame_id = global_origin_;
     msg.uav_name = uav_name_;
     msg.priority = priority_;
 
@@ -1742,10 +1765,10 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
       v.y               = tf.transform.translation.y + w.y();
       v.z               = tf.transform.translation.z + w.z();      
       v.w               = 0;
-      v.header.frame_id = "utm_origin";
+      v.header.frame_id = global_origin_;
       msg.poses.push_back(v);
     }
-    future_trajectory_publisher_->publish(msg);
+    trajectory_global_publisher_->publish(msg);
     return;
   }
   //}
@@ -1909,7 +1932,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
       msg.poses.push_back(p);
     }
 
-    trajectory_publisher_->publish(msg);
+    trajectory_local_publisher_->publish(msg);
 
   }
   //}

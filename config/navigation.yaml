@@ -33,6 +33,7 @@ bumper:
 
 collision_avoidance:
   priority: 1 
+  global_origin: "utm_origin"
   trajectory_timeout: 1.0 # [s]
   prediction_len: 10 # points
   prediction_time_horizon: 8.0 # [s]

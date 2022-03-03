@@ -58,10 +58,10 @@ def generate_launch_description():
                     ("~/trajectories_in", FUTURE_TRAJECTORIES_TOPIC),
 
                     ("~/diagnostics_out", "~/diagnostics"),
-                    ("~/trajectory_out", "~/trajectory"),
+                    ("~/trajectory_local_out", "~/trajectory_local"),
                     ("~/status_out", "~/status_out"), #needs to be named as status_out due to mission-engine plugin
                     ("~/future_path_out", "~/future_path"),
-                    ("~/future_trajectory_out", FUTURE_TRAJECTORIES_TOPIC),
+                    ("~/trajectory_global_out", FUTURE_TRAJECTORIES_TOPIC),
 
 
                     ("~/binary_tree_markers_out", "~/visualization/binary_tree_markers"),
