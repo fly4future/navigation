@@ -163,7 +163,7 @@ namespace navigation
 
     std::pair<std::vector<vec4_t>, bool> planPath(const vec4_t& goal, std::shared_ptr<octomap::OcTree> mapping_tree);
 
-    
+
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
 
@@ -213,11 +213,13 @@ namespace navigation
     double height_distance_threshold_;
     double prediction_time_sample_;
     double traj_update_rate_;
-  
+
     std::vector<std::string> avoidance_names_;
-    std::unordered_map<std::string, fog_msgs::msg::FutureTrajectory> other_uav_trajectories;
+    std::unordered_map<std::string, fog_msgs::msg::FutureTrajectory> other_uav_trajectories_;
+    std::unordered_map<std::string, bool> priorities_;
     bool checkTrajectory(std::vector<vec4_t>& trajectory);
     bool checkCollisions(const vec4_t& point_one, const vec4_t& point_two);
+    bool checkPriority(const int& priority, const std::string &name);
 
     // publishers
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr binary_tree_publisher_;
@@ -284,11 +286,11 @@ namespace navigation
     void visualizeExpansions(const std::unordered_set<navigation::Node, HashFunction> open, const std::unordered_set<navigation::Node, HashFunction>& closed,
                              const octomap::OcTree& tree);
     void visualizePath(const std::vector<vec4_t>& waypoints);
-    void visualizeTrajectory(const std::vector<vec4_t> &trajectory);
+    void visualizeTrajectory(const std::vector<vec4_t>& trajectory);
     void visualizeGoals(const std::deque<vec4_t>& waypoints);
 
     std::vector<vec4_t> resamplePath(const std::vector<octomap::point3d>& waypoints, const double end_heading) const;
-    std::vector<vec4_t> parametrizePath (const std::vector<vec4_t> &waypoints);
+    std::vector<vec4_t> parametrizePath(const std::vector<vec4_t>& waypoints);
     std::shared_ptr<fog_msgs::srv::Path::Request> waypointsToPath(const std::vector<vec4_t>& waypoints);
     void startSendingWaypoints(const std::vector<vec4_t>& waypoints);
     void hover();
@@ -366,7 +368,7 @@ namespace navigation
     loaded_successfully &= parse_param("collision_avoidance.priority", priority_, *this);
     loaded_successfully &= parse_param("collision_avoidance.global_origin", global_origin_, *this);
     loaded_successfully &= parse_param("collision_avoidance.prediction_len", prediction_len_, *this);
-    loaded_successfully &= parse_param("collision_avoidance.prediction_time_horizon",  time_prediction_horizon_, *this);
+    loaded_successfully &= parse_param("collision_avoidance.prediction_time_horizon", time_prediction_horizon_, *this);
     loaded_successfully &= parse_param("collision_avoidance.height_offset", height_offset_, *this);
     loaded_successfully &= parse_param("collision_avoidance.trajectory_update_rate", traj_update_rate_, *this);
     loaded_successfully &= parse_param("collision_avoidance.height_distance_threshold", height_distance_threshold_, *this);
@@ -562,50 +564,51 @@ namespace navigation
     RCLCPP_INFO_ONCE(get_logger(), "Getting control_interface diagnostics");
   }
   //}
-  
-/* otherUavTrajectoryCallback //{*/
-void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajectory::UniquePtr msg){
 
-  auto it = other_uav_trajectories.find(msg->uav_name); 
-  
-  const std::string octree_frame = get_mutexed(octree_mutex_, octree_frame_);
-  geometry_msgs::msg::TransformStamped tf;
-  try
+  /* otherUavTrajectoryCallback //{*/
+  void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajectory::UniquePtr msg)
   {
-    tf = tf_buffer_->lookupTransform(octree_frame,  global_origin_, get_clock()->now(),rclcpp::Duration::from_nanoseconds(100));
 
-  }
-  catch(tf2::TransformException &s)
-  {
-    RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(),  global_origin_.c_str(), s.what());
-    return;
-  }
-
-  fog_msgs::msg::FutureTrajectory new_msg;
-  new_msg.header.stamp = this->get_clock()->now();  //Update stamp
-  for (auto w: msg->poses)
-  {
-    fog_msgs::msg::Vector4Stamped p;
-    p.x = w.x + tf.transform.translation.x; 
-    p.y = w.y + tf.transform.translation.y; 
-    p.z = w.z + tf.transform.translation.z; 
-    p.w = w.w;
-    new_msg.poses.push_back(w);
-  }
- 
-  {
-    std::scoped_lock lck(mutex_other_uav_trajectories);
-    if (it == other_uav_trajectories.end()) 
+    const std::string octree_frame = get_mutexed(octree_mutex_, octree_frame_);
+    geometry_msgs::msg::TransformStamped tf;
+    try
     {
-      avoidance_names_.push_back(msg->uav_name);
+      tf = tf_buffer_->lookupTransform(octree_frame, global_origin_, get_clock()->now(), rclcpp::Duration::from_nanoseconds(100));
+    }
+    catch (tf2::TransformException& s)
+    {
+      RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(), global_origin_.c_str(), s.what());
+      return;
     }
 
-    other_uav_trajectories[msg->uav_name] = new_msg;
-  }
+    fog_msgs::msg::FutureTrajectory new_msg;
+    new_msg.header.stamp = this->get_clock()->now();  // Update stamp
+    for (auto w : msg->poses)
+    {
+      fog_msgs::msg::Vector4Stamped p;
+      p.x = w.x + tf.transform.translation.x;
+      p.y = w.y + tf.transform.translation.y;
+      p.z = w.z + tf.transform.translation.z;
+      p.w = w.w;
+      new_msg.poses.push_back(w);
+    }
 
-  return;
-}
-/*//}*/
+    {
+      std::scoped_lock lck(mutex_other_uav_trajectories);
+      auto it = other_uav_trajectories_.find(msg->uav_name);
+
+      if (it == other_uav_trajectories_.end())
+      {
+        avoidance_names_.push_back(msg->uav_name);
+        priorities_[msg->uav_name] = checkPriority(msg->priority, msg->uav_name);
+      }
+
+      other_uav_trajectories_[msg->uav_name] = new_msg;
+    }
+
+    return;
+  }
+  /*//}*/
 
   /* bumperCallback //{ */
   void Navigation::bumperCallback(const fog_msgs::msg::ObstacleSectors::UniquePtr msg)
@@ -988,22 +991,22 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     publishDiagnostics();
   }
   //}
-  
+
   /* futureTrajectoryRoutine //{ */
-  void Navigation::futureTrajectoryRoutine(void) 
+  void Navigation::futureTrajectoryRoutine(void)
   {
-    auto state = get_mutexed(state_mutex_, state_); 
+    auto state = get_mutexed(state_mutex_, state_);
     if (state == nav_state_t::not_ready)
       return;
-  
-    auto waypoints = get_mutexed(waypoints_mutex_, current_waypoints_); 
+
+    auto waypoints = get_mutexed(waypoints_mutex_, current_waypoints_);
 
     /* RCLCPP_INFO_STREAM(get_logger(), "Mission size: " << waypoints.size() << "Current waypoint: " << current_waypoint_id_); */
 
     std::vector<vec4_t> current_trajectory = parametrizePath(waypoints);
     checkTrajectory(current_trajectory);
     publishFutureTrajectory(current_trajectory);
-      
+
     visualizeTrajectory(current_trajectory);
     return;
   }
@@ -1016,7 +1019,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   {
     if (state_ == nav_state_t::not_ready)
       return;
-  
+
     // common checks for all states except unitialized
     const vehicle_state_t control_vehicle_state = get_mutexed(control_diags_mutex_, control_vehicle_state_);
     if (control_vehicle_state != vehicle_state_t::autonomous_flight)
@@ -1064,18 +1067,12 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     const bool bumper_ok = !bumper_enabled_ || !bumperDataOld(bumper_msg);
     const auto [control_vehicle_state, getting_control_diagnostics] = get_mutexed(control_diags_mutex_, control_vehicle_state_, getting_control_diagnostics_);
 
-    if (is_initialized_
-     && getting_octomap
-     && getting_control_diagnostics
-     && getting_uav_pose
-     && getting_cmd_pose
-     && bumper_ok
-     && control_vehicle_state == vehicle_state_t::autonomous_flight)
+    if (is_initialized_ && getting_octomap && getting_control_diagnostics && getting_uav_pose && getting_cmd_pose && bumper_ok
+        && control_vehicle_state == vehicle_state_t::autonomous_flight)
     {
       state_ = nav_state_t::idle;
       RCLCPP_INFO(get_logger(), "Navigation is now ready! Switching state to idle.");
-    }
-    else
+    } else
     {
       std::string reasons;
       add_reason_if("missing octomap", !getting_octomap, reasons);
@@ -1104,7 +1101,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   void Navigation::state_navigation_planning()
   {
     /* initial checks //{ */
-    
+
     if (octree_ == nullptr || octree_->size() < 1)
     {
       RCLCPP_WARN(get_logger(), "Octomap is nullptr or empty! Aborting planning and swiching to idle");
@@ -1579,36 +1576,35 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     }
 
     vec4_t last = uav_pose;
-  
+
     int i = 0;
     double rdistance = desired_distance;
 
     int j = current_waypoint_id;
-    while (j < num_of_waypoints) 
+    while (j < num_of_waypoints)
     {
       vec4_t next_point;
-  
+
       double dist = (last.head<3>() - waypoints.at(j).head<3>()).norm();
-      if (dist >= rdistance) 
-      { 
-        next_point.head<3>() = last.head<3>() + (waypoints.at(j).head<3>() - last.head<3>()).normalized() * rdistance;;
+      if (dist >= rdistance)
+      {
+        next_point.head<3>() = last.head<3>() + (waypoints.at(j).head<3>() - last.head<3>()).normalized() * rdistance;
         next_point.w() = 0;
-  
+
         ret.push_back(next_point);
         last = next_point;
         rdistance = desired_distance;
-  
+
         if (++i == prediction_len_)
           break;
-      } 
-      else 
+      } else
       {
         rdistance -= dist;
         last = waypoints.at(j++);
       }
     }
-  
-    for(int j = i; j < prediction_len_; j++) 
+
+    for (int j = i; j < prediction_len_; j++)
       ret.push_back(waypoints.back());
 
     return ret;
@@ -1620,44 +1616,67 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   {
     std::scoped_lock lock(mutex_other_uav_trajectories);
 
+
     int size = trajectory.size();
-    auto it = other_uav_trajectories.begin();
-    while (it != other_uav_trajectories.end())
+    auto it = other_uav_trajectories_.begin();
+    while (it != other_uav_trajectories_.end())
     {
-      if(it->second.uav_name != uav_name_)
-      { 
-        if((get_clock()->now() - it->second.header.stamp).nanoseconds() < 2000)
-        { 
+      if (it->second.uav_name != uav_name_)
+      {
+        if ((get_clock()->now() - it->second.header.stamp).nanoseconds() < 2000)
+        {
+          bool have_priority = priorities_[it->second.uav_name];
           for (int i = 0; i < size; i++)
           {
             if (checkCollisions(trajectory.at(i), to_eigen(it->second.poses.at(i))))
             {
               // collision found, compare priorities, modify
-              if (priority_ <= it->second.priority)
+              RCLCPP_INFO(get_logger(), "found collision");
+              if (!have_priority)
               {
                 // TODO - add obstacle and replan
-                // pause trajectory 
-                //
-                RCLCPP_INFO(get_logger(), "found collision");
+                // cancel current trajectory
+                //  
               }
+              else
+              {
+                RCLCPP_INFO(get_logger(), "Flying through, have higher priority");
+              }
+
             }
           }
         }
       }
       ++it;
     }
-  
+
     return true;
   }
   /*//}*/
 
   /* checkCollisions //{*/
-  bool Navigation::checkCollisions(const vec4_t& one, const vec4_t& two){
-  
+  bool Navigation::checkCollisions(const vec4_t& one, const vec4_t& two)
+  {
+
     if ((one.head<2>() - two.head<2>()).norm() < horizontal_distance_threshold_ || fabs(one.z() - two.z()) < height_distance_threshold_)
     {
-        return true;
+      return true;
     }
+    return false;
+  }
+  /*//}*/
+
+  /*//{ checkPriority*/
+  // Decided what uav has priority
+  bool Navigation::checkPriority(const int& other_uav_priority, const std::string& other_uav_name)
+  {
+    if (priority_ > other_uav_priority)
+      return true;  
+    
+    //name with the first different letter lower has priority 
+    if (strcmp(uav_name_.c_str(), other_uav_name.c_str()) < 0) 
+      return true;
+
     return false;
   }
   /*//}*/
@@ -1735,36 +1754,37 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     future_path_publisher_->publish(msg);
   }
   //}
-  
+
   /* publishFutureTrajectory //{ */
-  void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory) 
+  void Navigation::publishFutureTrajectory(const std::vector<vec4_t>& trajectory)
   {
 
     const std::string octree_frame = get_mutexed(octree_mutex_, octree_frame_);
     geometry_msgs::msg::TransformStamped tf;
     try
     {
-      tf = tf_buffer_->lookupTransform(global_origin_, octree_frame, get_clock()->now(),rclcpp::Duration::from_nanoseconds(100));
+      tf = tf_buffer_->lookupTransform(global_origin_, octree_frame, get_clock()->now(), rclcpp::Duration::from_nanoseconds(100));
     }
-    catch(tf2::TransformException &s)
+    catch (tf2::TransformException& s)
     {
       RCLCPP_WARN(get_logger(), "Could not find transform %s to %s: %s", octree_frame.c_str(), global_origin_.c_str(), s.what());
       return;
     }
 
     fog_msgs::msg::FutureTrajectory msg;
-    msg.header.stamp    = get_clock()->now();
+    msg.header.stamp = get_clock()->now();
     msg.header.frame_id = global_origin_;
     msg.uav_name = uav_name_;
     msg.priority = priority_;
 
-    for (const auto &w : trajectory) {
+    for (const auto& w : trajectory)
+    {
 
       fog_msgs::msg::Vector4Stamped v;
-      v.x               = tf.transform.translation.x + w.x();
-      v.y               = tf.transform.translation.y + w.y();
-      v.z               = tf.transform.translation.z + w.z();      
-      v.w               = 0;
+      v.x = tf.transform.translation.x + w.x();
+      v.y = tf.transform.translation.y + w.y();
+      v.z = tf.transform.translation.z + w.z();
+      v.w = 0;
       v.header.frame_id = global_origin_;
       msg.poses.push_back(v);
     }
@@ -1914,9 +1934,9 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     path_publisher_->publish(msg);
   }
   //}
-  
+
   /* visualizeTrajectory//{*/
-  void Navigation::visualizeTrajectory(const std::vector<vec4_t> &trajectory)
+  void Navigation::visualizeTrajectory(const std::vector<vec4_t>& trajectory)
   {
     geometry_msgs::msg::PoseArray msg;
     msg.header.frame_id = get_mutexed(octree_mutex_, octree_frame_);
@@ -1924,7 +1944,8 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
 
     geometry_msgs::msg::Pose p;
 
-    for (auto& point:trajectory) {
+    for (auto& point : trajectory)
+    {
       p.position.x = point.x();
       p.position.y = point.y();
       p.position.z = point.z();
@@ -1933,7 +1954,6 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     }
 
     trajectory_local_publisher_->publish(msg);
-
   }
   //}
 
@@ -2013,7 +2033,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
   {
     return {vec.x(), vec.y(), vec.z()};
   }
-  
+
   vec4_t to_eigen(const octomath::Vector3& vec, const double heading)
   {
     return {vec.x(), vec.y(), vec.z(), heading};
@@ -2029,7 +2049,7 @@ void Navigation::otherUavTrajectoryCallback(const fog_msgs::msg::FutureTrajector
     return {pose.x, pose.y, pose.z, pose.w};
   }
   //}
-  
+
   /* toPoint3d() method //{ */
   octomap::point3d toPoint3d(const vec4_t& vec)
   {
