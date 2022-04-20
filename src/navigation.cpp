@@ -582,6 +582,7 @@ namespace navigation
     }
 
     fog_msgs::msg::FutureTrajectory new_msg;
+    new_msg.uav_name = msg->uav_name;
     new_msg.header.stamp = this->get_clock()->now();  // Update stamp
     for (auto w : msg->poses)
     {
@@ -1623,27 +1624,35 @@ namespace navigation
     {
       if (it->second.uav_name != uav_name_)
       {
+        RCLCPP_INFO(get_logger(), "compared names %s - %s", it->second.uav_name.c_str(), uav_name_.c_str());
         if ((get_clock()->now() - it->second.header.stamp).nanoseconds() < 2000)
         {
+          bool found_collision = false;
+          bool avoiding = false;
           bool have_priority = priorities_[it->second.uav_name];
           for (int i = 0; i < size; i++)
           {
             if (checkCollisions(trajectory.at(i), to_eigen(it->second.poses.at(i))))
             {
               // collision found, compare priorities, modify
-              RCLCPP_INFO(get_logger(), "found collision");
+              found_collision = true;
               if (!have_priority)
               {
+                avoiding = true;
                 // TODO - add obstacle and replan
                 // cancel current trajectory
                 //  
               }
-              else
-              {
-                RCLCPP_INFO(get_logger(), "Flying through, have higher priority");
-              }
-
             }
+          }
+
+          if(found_collision && avoiding)
+          {
+            RCLCPP_INFO(get_logger(), "found collisions with %s , avoiding", it->second.uav_name.c_str());
+          }
+          else if(found_collision)
+          {
+            RCLCPP_INFO(get_logger(), "found collision with %s , I have higher priority", it->second.uav_name.c_str());
           }
         }
       }
@@ -1674,10 +1683,8 @@ namespace navigation
       return true;  
     
     //name with the first different letter lower has priority 
-    if (strcmp(uav_name_.c_str(), other_uav_name.c_str()) < 0) 
-      return true;
+    return uav_name_ < other_uav_name;
 
-    return false;
   }
   /*//}*/
 
